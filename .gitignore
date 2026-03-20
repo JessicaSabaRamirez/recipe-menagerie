@@ -1,0 +1,29 @@
+# Python
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.env
+backend/.env
+
+# Node / Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Backend static (generated from frontend build, not committed)
+backend/static/
+
+# Gemini backup files
+*.bak
+*.bak2
+*.bak3
+*.bak4
+*.bak.2
+
+# Google credentials (secrets should not be in source control)
+backend/client_secret.json
+
+# Misc
+.DS_Store
+*.log

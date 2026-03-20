@@ -1,0 +1,760 @@
+import { GoogleLogin, googleLogout } from '@react-oauth/google';
+import { jwtDecode } from "jwt-decode";
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import headerImage from './header-image.png';
+import { addToShoppingList,
+         analyzeImage,
+         createRecipe,
+         deleteRecipe,
+         deleteRecipeImage,
+         fetchRecipes,
+         importFromUrl, 
+         setAuthToken,
+         updateRecipe,
+         uploadRecipeImage
+     } from './api';
+
+const API_URL = ""; 
+
+function App() {
+  const [recipes, setRecipes] = useState([]);
+  const [selectedRecipe, setSelectedRecipe] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [user, setUser] = useState(null);
+  const [cookMode, setCookMode] = useState(false);
+  const [wakeLock, setWakeLock] = useState(null);
+  
+  // --- SECURITY CONFIG ---
+  // Add the Google Emails of people allowed to EDIT
+  const ALLOWED_EDITORS = [
+    "jessicasabaramirez@gmail.com", "jessleahkirchner@gmail.com", "highlandparkmermaids@gmail.com",
+    "osabaramirez@gmail.com", "stephjbee@gmail.com", "cactuslady55@gmail.com", "kirchnerwilliam07@gmail.com"
+  ];
+
+  const isEditor = user && ALLOWED_EDITORS.includes(user.email);
+
+  // --- URL IMPORT STATE ---
+  const [importUrl, setImportUrl] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  // --- EDIT MODE STATE ---
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ 
+    title: "", 
+    tags: "", 
+    ingredients: "", 
+    instructions: "",
+    source_type: "personal",
+    source_title: "",
+    source_url: "",
+    source_page: ""
+  });
+
+    // --- RANDOM EMOJI --- 
+  const [randomEmoji] = useState(() => {
+    const foodEmojis = ["🍇", "🍉", "🍊", "🍋", "🍋‍🟩", "🍍", "🥭", "🍑", "🍒", "🍓", "🫐",
+                        "🥑", "🍆", "🥔", "🥕", "🧄", "🫛", "🍞", "🥐", "🥖", "🥨", "🥞",
+                        "🧀", "🍖", "🍗", "🍔", "🥪", "🌮", "🥚", "🍳", "🥘", "🥗", "🥫",
+                        "🍝", "🍚", "🍜", "🥟", "🥠", "🍦", "🍩", "🍪", "🎂", "🍷", "🍹",
+                        "🥂", "🧉", "🥢", "🍽️", "🔪", "🏺"];
+    return foodEmojis[Math.floor(Math.random() * foodEmojis.length)];
+  });
+
+// Add this useEffect near the top of your App component
+  useEffect(() => {
+    // Check if we have a saved token
+    const savedToken = localStorage.getItem("token");
+    
+    if (savedToken) {
+        // A. Decode and restore the User UI
+        try {
+            const decoded = jwtDecode(savedToken);
+            setUser(decoded);
+            
+            // B. Restore the API Token
+            import('./api').then(module => {
+                module.setAuthToken(savedToken);
+            });
+        } catch (e) {
+            // If token is invalid/expired, clear it
+            console.error("Invalid token found");
+            localStorage.removeItem("token");
+        }
+    }
+  
+  loadRecipes();
+  }, []);
+
+  const loadRecipes = async () => {
+    try {
+      const data = await fetchRecipes();
+      setRecipes(data);
+    } catch (err) {
+      console.error("Failed to load recipes", err);
+    }
+  };
+
+  const safeList = (list) => {
+    if (!list) return [];
+    if (Array.isArray(list)) return list;
+    if (typeof list === 'string') return list.split(',').map(item => item.trim());
+    return [];
+  };
+
+  // --- HANDLERS ---
+
+  // 1. Manual Entry Handler
+  const handleManualEntry = () => {
+    // Create a blank template
+    const newRecipe = {
+        title: "New Recipe",
+        ingredients: [],
+        instructions: [],
+        tags: [],
+        source: { type: "personal" }
+    };
+    
+    setSelectedRecipe(newRecipe);
+    
+    // Populate the form with blank data
+    setEditForm({
+        title: "",
+        tags: "",
+        ingredients: "",
+        instructions: "",
+        source_type: "personal",
+        source_title: "",
+        source_url: "",
+        source_page: ""
+    });
+    
+    setIsEditing(true);
+  };
+
+  const handleUrlImport = async () => {
+    if (!importUrl) return;
+    setImporting(true);
+    try {
+      await importFromUrl(importUrl);
+      alert("Recipe imported successfully!");
+      setImportUrl(""); 
+      loadRecipes();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to import recipe.");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploading(true);
+
+    try {
+      // 1. ANALYZE (Uses api.js, so Auth is included)
+      const aiData = await analyzeImage(file);
+
+      const confirmedTitle = prompt("Recipe Title found:", aiData.title);
+      if (confirmedTitle) {
+         
+         // 2. PREPARE CLEAN JSON
+         const cleanRecipe = {
+             title: confirmedTitle,
+             ingredients: Array.isArray(aiData.ingredients)
+               ? aiData.ingredients
+               : (typeof aiData.ingredients === 'string' ? aiData.ingredients.split('\n') : []),
+             structured_ingredients: Array.isArray(aiData.structured_ingredients)
+               ? aiData.structured_ingredients
+               : [], 
+             instructions: Array.isArray(aiData.instructions)
+               ? aiData.instructions
+               : (typeof aiData.instructions === 'string' ? aiData.instructions.split('\n') : []),
+             tags: Array.isArray(aiData.tags) ? aiData.tags : [],
+             source: {
+               type: aiData.source?.type || "n\a",
+               title: aiData.source?.title | "",
+               url: aiData.source?.url || "",
+               page: aiData.source?.page || ""
+             }
+         };
+
+         // 3. CREATE RECIPE (Sends JSON + Auth)
+         // This returns the new recipe, including its ID
+         const newRecipe = await createRecipe(cleanRecipe);
+         
+         // 4. UPLOAD IMAGE (Attaches the file to the new ID)
+         if (newRecipe.id) {
+             await uploadRecipeImage(newRecipe.id, file);
+         }
+         
+         alert("Recipe saved!");
+         loadRecipes();
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Failed to analyze or save recipe.");
+    } finally {
+      setUploading(false);
+      // Reset the file input so you can upload the same file again if needed
+      e.target.value = null; 
+    }
+  };
+
+  const handleShoppingList = async () => {
+    if (!selectedRecipe) return;
+    const confirm = window.confirm(`Add items to your Shopping List?`);
+    if (confirm) {
+      try {
+        let listToSend = [];
+
+        if (selectedRecipe.structured_ingredients && selectedRecipe.structured_ingredients.length > 0) {
+          listToSend = selectedRecipe.structured_ingredients.map(item => {
+            const dash = (item.qty || item.unit) ? "-" : null;
+            const parts = [item.item, dash, item.qty, item.unit];
+            return parts.filter(p => p).join(" ");
+          });
+        } else {
+          // Fallback for old recipes
+          listToSend = safeList(selectedRecipe.ingredients);
+        }
+
+        await addToShoppingList(selectedRecipe.title, listToSend);
+        alert("Success! Check your Google Tasks.");
+      } catch (err) {
+        console.error("API Error:", err);
+        alert("Failed to add tasks.");
+      }
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedRecipe || !selectedRecipe.id) {
+        // If it's a new recipe that hasn't been saved, just clear selection
+        setSelectedRecipe(null);
+        return;
+    }
+    const confirm = window.confirm("Are you sure you want to delete this recipe?");
+    if (confirm) {
+      try {
+        await deleteRecipe(selectedRecipe.id);
+        alert("Recipe deleted.");
+        setSelectedRecipe(null);
+        loadRecipes();
+      } catch (err) {
+        console.error(err);
+        alert("Failed to delete recipe.");
+      }
+    }
+  };
+
+  const handleDeleteImage = async () => {
+    if (!selectedRecipe) return;
+
+    const confirm = window.confirm("");
+    if (confirm("Are you sure you want to delete this recipe?")) {
+      try {
+        await deleteRecipeImage(selectedRecipe.id);
+
+        const updatedRecipe = { ...selectedRecipe, original_image_url: null };
+        setSelectedRecipe(updatedRecipe);
+
+        setRecipes(prevRecipes =>
+         prevRecipes.map(r => r.id === selectedRecipe.id ? updatedRecipe : r) 
+        );
+
+        alert("Photo removed.");
+      } catch (err) {
+        console.error("Failed to delete image", err);
+        alert("Failed to delete image.");
+      }
+    }
+  };
+
+  const startEditing = () => {
+    setEditForm({
+      title: selectedRecipe.title,
+      tags: safeList(selectedRecipe.tags).join(", "),
+      ingredients: safeList(selectedRecipe.ingredients).join("\n"),
+      instructions: safeList(selectedRecipe.instructions).join("\n"),
+      source_type: selectedRecipe.source?.type || "personal",
+      source_title: selectedRecipe.source?.title || "",
+      source_url: selectedRecipe.source?.url || "",
+      source_page: selectedRecipe.source?.page || ""
+    });
+    setIsEditing(true);
+  };
+
+  const handleEditChange = (e) => {
+    setEditForm({ ...editForm, [e.target.name]: e.target.value });
+  };
+
+  // SMART SAVE (Handles both New and Existing)
+  const handleSave = async () => {
+    try {
+      const recipeData = {
+        ...selectedRecipe,
+        title: editForm.title || "Untitled Recipe",
+        tags: editForm.tags.split(",").map(t => t.trim()).filter(t => t !== ""),
+        ingredients: editForm.ingredients.split("\n").filter(line => line.trim() !== ""),
+        instructions: editForm.instructions.split("\n").filter(line => line.trim() !== ""),
+        source: {
+            type: editForm.source_type,
+            title: editForm.source_title,
+            url: editForm.source_url,
+            page: editForm.source_page
+        }
+      };
+
+      if (selectedRecipe.id) {
+          // UPDATE EXISTING
+          await updateRecipe(selectedRecipe.id, recipeData);
+      } else {
+          // CREATE NEW
+          const savedData = await createRecipe(recipeData);
+          // Update the selection with the new ID so future saves are updates
+          recipeData.id = savedData.id; 
+      }
+      
+      setSelectedRecipe(recipeData);
+      setIsEditing(false);
+      loadRecipes();
+      alert("Recipe saved!");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to save recipe.");
+    }
+  };
+
+  // --- WAKE LOCK HANDLER ---
+  const toggleCookMode = async () => {
+    // If it's already ON, turn it OFF
+    if (cookMode) {
+        if (wakeLock) {
+            await wakeLock.release();
+            setWakeLock(null);
+        }
+        setCookMode(false);
+        return;
+    }
+
+    // If it's OFF, turn it ON
+    try {
+        if ('wakeLock' in navigator) {
+            const lock = await navigator.wakeLock.request('screen');
+            setWakeLock(lock);
+            setCookMode(true);
+            
+            // Safety: If user switches tabs, the lock releases automatically.
+            // We need to listen for that to update our UI.
+            lock.addEventListener('release', () => {
+                setCookMode(false);
+                setWakeLock(null);
+            });
+        } else {
+            alert("Your browser doesn't support Cook Mode (Wake Lock).");
+        }
+    } catch (err) {
+        console.error(`${err.name}, ${err.message}`);
+        alert("Failed to keep screen awake.");
+    }
+  };
+
+  // Filter Logic
+  const filteredRecipes = recipes.filter(recipe => {
+    const searchTerms = searchTerm.toLowerCase().trim().split(/\s+/);
+
+    const title = (recipe.title || "").toLowerCase();
+    const tags = safeList(recipe.tags).map(t => t.toLowerCase());
+    const ingredients = safeList(recipe.ingredients).join(" ").toLowerCase();
+    return searchTerms.every(term => {
+      return (
+        title.includes(term) ||
+        tags.some(tag => tag.includes(term)) ||
+        ingredients.includes(term)
+      )
+    })
+  });
+
+  const handleLoginSuccess = (credentialResponse) => {
+    // 1. Decode the user info (existing code)
+    const decoded = jwtDecode(credentialResponse.credential);
+    setUser(decoded);
+    
+    // 2. Save token to LocalStorage
+    localStorage.setItem("token", credentialResponse.credential); 
+
+    // 3. Set token in API
+    setAuthToken(credentialResponse.credential);
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    localStorage.removeItem("token"); // Clean up
+    setAuthToken(null);
+  };
+
+
+  return (
+    <div className="flex flex-col md:flex-row h-screen bg-gray-100 font-sans text-gray-800 overflow-hidden print:h-auto print:overflow-visible">
+      {/* --- SIDEBAR --- */}
+      <div className={`sidebar w-full md:w-1/3 bg-white border-r border-gray-200 flex flex-col shadow-lg z-10 print:hidden
+        ${selectedRecipe ? 'hidden md:flex' : 'flex h-full'}
+      `}>
+        {/* HEADER: Maximized Image + Login */}
+        <div className="bg-yellow-500 shadow-md relative group">
+          <img src={headerImage} alt="Recipe Menagerie" className="w-full h-auto object-cover block"  />
+
+        {/* Auth Overlay (Visible on Hover or if Not Logged In) */}
+        <div className="absolute top-2 right-2 transition-opacity duration-300 opacity-90 hover:opacity-100">
+          {user ? (
+            <div className="flex items-center gap-2 bg-white/90 p-1.5 rounded-full shadow-lg pr-3 backdrop-blur-sm">
+              <img src={user.picture} alt={user.name} className="w-8 h-8 rounded-full border border-gray-300" />
+              <div className="flex flex-col text-xs leading-tight mr-1">
+                <span className="font-bold text-gray-800">{user.given_name}</span>
+                <button onClick={handleLogout} className="text-red-500 hover:underline text-[10px] text-left font-bold">Sign Out</button>
+              </div>
+            </div>
+           ) : (
+          <div className="bg-white p-1 rounded-md shadow-lg">
+            <GoogleLogin onSuccess={handleLoginSuccess} onError={() => console.log('Login Failed')} type="icon" shape="circle" />
+          </div>
+          )}
+        </div>
+      </div>
+        
+        {/* ACTION BAR */}
+        <div className="p-4 border-b bg-gray-50 space-y-3">
+           <input 
+             type="text" 
+             placeholder="🔍 Search recipes..." 
+             value={searchTerm}
+             onChange={(e) => setSearchTerm(e.target.value)}
+             className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-yellow-400"
+           />
+
+           {/* ONLY EDITORS CAN ADD */}
+           {isEditor && (
+           <div className="flex gap-2">
+             <input 
+                type="text" 
+                placeholder="Paste Recipe URL..." 
+                value={importUrl}
+                onChange={(e) => setImportUrl(e.target.value)}
+                className="flex-1 p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
+             />
+             <button 
+                onClick={handleUrlImport}
+                disabled={importing || !importUrl}
+                className="bg-blue-600 text-white px-3 py-2 rounded font-bold text-sm hover:bg-blue-700 disabled:bg-gray-300"
+             >
+                {importing ? "..." : "Import"}
+             </button>
+           </div>
+           )}
+
+           {/* BUTTON ROW: Upload & Manual */}
+           {isEditor && (
+           <div className="flex gap-2">
+               <label className="flex-1 text-center bg-white border-2 border-dashed border-gray-300 rounded-lg p-2 text-sm text-gray-500 hover:border-yellow-500 hover:text-yellow-500 transition cursor-pointer">
+                 {uploading ? "⏳..." : "📷 Upload Photo"}
+                 <input 
+                   type="file" 
+                   className="hidden" 
+                   accept="image/*"
+                   onChange={handleFileUpload}
+                   disabled={uploading}
+                 />
+               </label>
+               
+               <button 
+                 onClick={handleManualEntry}
+                 className="flex-1 bg-green-50 border-2 border-dashed border-green-300 text-green-700 rounded-lg p-2 text-sm font-bold hover:bg-green-100 hover:border-green-500 transition"
+               >
+                 📝 Manual Entry
+               </button>
+           </div>
+           )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {loading ? (
+             <p className="text-center text-gray-400 mt-10 animate-pulse">Loading recipes...</p>
+          ) : (
+            filteredRecipes.map((recipe) => (
+              <div 
+                key={recipe.id} 
+                onClick={() => { setSelectedRecipe(recipe); setIsEditing(false); }}
+                className={`cursor-pointer p-4 rounded-xl transition-all duration-200 border ${
+                  selectedRecipe?.id === recipe.id 
+                    ? "bg-yellow-50 border-yellow-400 shadow-md transform scale-[1.02]" 
+                    : "bg-white border-gray-100 hover:bg-gray-50 hover:shadow"
+                }`}
+              >
+                <div className="font-bold text-lg text-gray-800">{recipe.title || "Untitled Recipe"}</div>
+                <div className="text-xs text-gray-400 uppercase tracking-wide mt-1 flex gap-1 flex-wrap">
+                  {safeList(recipe.tags).slice(0, 3).map((tag, i) => (
+                      <span key={i} className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-md font-medium">{tag}</span>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* --- MAIN CONTENT --- */}
+      <div className={`w-full md:flex-1 p-0 md:p-8 overflow-y-auto h-full bg-gray-50 print:p-0 print:h-auto print:overflow-visible print:bg-white
+        ${!selectedRecipe ? 'hidden md:flex md:items-center md:justify-center' : 'flex'}
+      `}>
+        
+        {selectedRecipe ? (
+          <div className="w-full h-full md:h-auto">
+            
+            {isEditing ? (
+              /* === EDIT MODE === */
+            <div className="max-w-3xl mx-auto bg-white p-4 md:p-8 rounded-none md:rounded-lg shadow-lg min-h-screen md:min-h-0">
+              <h2 className="text-2xl font-bold mb-6 text-gray-800 border-b pb-2">
+                {selectedRecipe.id ? "Edit Recipe" : "New Recipe"}
+              </h2>
+
+             {/* --- PHOTO MANAGER --- */}
+             <div className="mb-8 p-6 bg-gray-50 rounded-xl border-2 border-dashed border-gray-300 text-center relative">
+               <label className="block font-bold mb-2 text-gray-400 uppercase tracking-wide text-xs">Recipe Photo</label>
+               {selectedRecipe.original_image_url ? (<div className="relative inline-block group">
+                <img src={selectedRecipe.original_image_url} alt="Recipe" className="h-64 w-auto object-cover rounded-lg shadow-md mx-auto" />
+              {/* DELETE BUTTON */}
+              <button 
+                  onClick={handleDeleteImage}
+                  className="text-red-500 text-xs underline mt-2 hover:text-red-700">
+                  🗑️
+              </button>
+          </div>
+      ) : (
+          <div className="flex flex-col items-center justify-center py-4">
+              <div className="text-gray-300 text-5xl mb-3">📷</div>
+              {selectedRecipe.id ? (
+                  <label className="cursor-pointer bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-full shadow-sm hover:bg-blue-50 hover:border-blue-400 transition font-medium">
+                      Upload Photo
+                      <input 
+                          type="file" 
+                          className="hidden" 
+                          accept="image/*"
+                          onChange={async (e) => {
+                              if (e.target.files[0]) {
+                                if (confirm(`Create recipe: ${aiData.title}?`)) {
+                                  try {
+                                    // 1. PREPARE CLEAN JSON (BULLETPROOF VERSION)
+                                    const cleanRecipe = {
+                                      title: confirmedTitle,
+
+                                      // Safety Check: If AI gives a string/null, convert to empty array or split by newlines
+                                      ingredients: Array.isArray(aiData.ingredients) 
+                                      ? aiData.ingredients 
+                                      : (typeof aiData.ingredients === 'string' ? aiData.ingredients.split('\n') : []),
+
+                                      instructions: Array.isArray(aiData.instructions) 
+                                      ? aiData.instructions 
+                                      : (typeof aiData.instructions === 'string' ? aiData.instructions.split('\n') : []),
+
+                                      tags: Array.isArray(aiData.tags) ? aiData.tags : [],
+
+                                      // Safety Check: Ensure 'source' has the required 'type' field
+                                      source: {
+                                        type: aiData.source?.type || "n/a", // Default to "personal" if missing
+                                        title: aiData.source?.title || "",
+                                        url: aiData.source?.url || "",
+                                        page: aiData.source?.page || ""
+                                      }
+                                    };
+                                    // 2. CALL DIRECTLY
+                                    const newRecipe = await createRecipe(cleanRecipe);
+
+                                    // 3. UPDATE UI
+                                    setRecipes([...recipes, newRecipe]);
+                                    alert("Recipe created!");
+                                  } catch (err) {
+                                    console.error(err);
+                                    alert("Failed to create recipe.");
+                                  }
+                                }
+                              }
+                          }}
+                      />
+                  </label>
+              ) : (
+                  <p className="text-sm text-gray-400 italic">Save the recipe first to add a photo.</p>
+              )}
+          </div>
+      )}
+  </div>
+
+                {/* --- TITLE INPUT --- */}
+                <div className="mb-6">
+                  <label className="block font-bold mb-2 text-gray-600">Title</label>
+                  <input name="title" value={editForm.title} onChange={handleEditChange} className="w-full text-xl p-3 border border-gray-300 rounded outline-none focus:border-yellow-400" placeholder="Recipe Name" />
+                </div>
+
+                <div className="mb-6 print:hidden">
+                  <label className="block font-bold mb-2 text-gray-600">Tags (comma separated)</label>
+                  <input 
+                    name="tags" 
+                    value={editForm.tags} 
+                    onChange={handleEditChange} 
+                    placeholder="e.g. Dinner, Spicy, Italian"
+                    className="w-full p-3 border border-gray-300 rounded outline-none focus:border-yellow-400" 
+                  />
+                </div>
+
+                <div className="mb-6 bg-gray-50 p-4 rounded border border-gray-200">
+                    <h3 className="font-bold text-gray-700 mb-3">Source Information</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-500 mb-1">Type</label>
+                            <select name="source_type" value={editForm.source_type} onChange={handleEditChange} className="w-full p-2 border rounded">
+                                <option value="personal">Personal / Family</option>
+                                <option value="book">Cookbook</option>
+                                <option value="website">Website</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-500 mb-1">Source Name</label>
+                            <input name="source_title" value={editForm.source_title} onChange={handleEditChange} className="w-full p-2 border rounded" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-500 mb-1">Page Number</label>
+                            <input name="source_page" value={editForm.source_page} onChange={handleEditChange} className="w-full p-2 border rounded" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-500 mb-1">URL</label>
+                            <input name="source_url" value={editForm.source_url} onChange={handleEditChange} className="w-full p-2 border rounded" />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mb-6">
+                  <label className="block font-bold mb-2 text-gray-600">Ingredients</label>
+                  <textarea name="ingredients" value={editForm.ingredients} onChange={handleEditChange} className="w-full h-48 p-3 border border-gray-300 rounded font-mono text-sm outline-none focus:border-yellow-400" placeholder="1 cup flour..." />
+                </div>
+
+                <div className="mb-8">
+                  <label className="block font-bold mb-2 text-gray-600">Instructions</label>
+                  <textarea name="instructions" value={editForm.instructions} onChange={handleEditChange} className="w-full h-48 p-3 border border-gray-300 rounded font-mono text-sm outline-none focus:border-yellow-400" placeholder="1. Mix ingredients..." />
+                </div>
+
+                <div className="flex gap-4 pt-4 border-t pb-10">
+                  <button onClick={handleSave} className="bg-green-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-green-700 shadow">
+                      {selectedRecipe.id ? "Save Changes" : "Create Recipe"}
+                  </button>
+                  <button onClick={() => {
+                      // If cancelling a new recipe creation, go back to empty
+                      if (!selectedRecipe.id) setSelectedRecipe(null);
+                      setIsEditing(false);
+                  }} className="bg-gray-400 text-white px-6 py-2 rounded-lg font-bold hover:bg-gray-500">Cancel</button>
+                </div>
+              </div>
+
+            ) : (
+              /* === VIEW MODE === */
+              <div className="max-w-4xl mx-auto bg-white p-6 md:p-10 rounded-none md:rounded-2xl shadow-none md:shadow-xl min-h-screen md:min-h-0">
+                <button onClick={() => setSelectedRecipe(null)} className="mb-6 text-gray-500 hover:text-gray-700 font-medium flex items-center gap-2">
+                   ← Back to List
+                </button>
+
+                {selectedRecipe.original_image_url && (
+                  <img src={selectedRecipe.original_image_url} alt={selectedRecipe.title} className="w-full h-64 md:h-80 object-cover rounded-xl mb-6 shadow-sm" />
+                )}
+
+                {/* TITLE HEADER + COOK MODE */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b pb-4">
+                  <h1 className="text-3xl md:text-4xl font-extrabold text-gray-900 leading-tight">
+                    {selectedRecipe.title || "Untitled Recipe"}
+                  </h1>
+                  
+                  <button onClick={toggleCookMode}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-full font-bold text-sm shadow-sm transition-all
+                      ${cookMode ? "bg-green-100 text-green-800 ring-2 ring-green-500 animate-pulse" 
+                      : "bg-gray-100 text-gray-500 hover:bg-gray-200 print:hidden"
+                      }
+                    `}>
+                    {cookMode ? "🔥 Cook Mode ON" : "💤 Cook Mode OFF"}
+                  </button>
+                </div>
+                
+                {/* SAFE TAGS */}
+                {safeList(selectedRecipe.tags).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-6 print:hidden">
+                    {safeList(selectedRecipe.tags).map((tag, i) => (
+                      <span key={i} className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-semibold shadow-sm">
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Source Info */}
+                {selectedRecipe.source && (selectedRecipe.source.title || selectedRecipe.source.url) && (
+                    <div className="text-gray-500 mb-8 italic flex flex-wrap items-center gap-2 border-l-4 border-gray-300 pl-4">
+                        <span className="font-semibold">Source:</span>
+                        {selectedRecipe.source.url ? (
+                            <a href={selectedRecipe.source.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+                                {selectedRecipe.source.title || "Website Link"}
+                            </a>
+                        ) : (
+                            <span>{selectedRecipe.source.title || "Unknown"}</span>
+                        )}
+                        {selectedRecipe.source.page && (
+                            <span className="bg-gray-100 px-2 py-0.5 rounded text-sm not-italic">Page {selectedRecipe.source.page}</span>
+                        )}
+                    </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-12 mt-6">
+                  <div>
+                    <h3 className="text-2xl font-bold mb-4 text-gray-800 border-b-4 border-yellow-300 pb-1 inline-block">Ingredients</h3>
+                    <ul className="space-y-3 text-gray-700 leading-relaxed">
+                      {safeList(selectedRecipe.ingredients).map((ing, i) => (
+                        <li key={i} className="flex items-start"><span className="mr-3 text-yellow-500 mt-1.5 text-xs">●</span> {ing}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-bold mb-4 text-gray-800 border-b-4 border-blue-300 pb-1 inline-block">Instructions</h3>
+                    <ol className="space-y-5 text-gray-700">
+                      {safeList(selectedRecipe.instructions).map((step, i) => (
+                        <li key={i} className="flex gap-4"><span className="font-bold text-gray-300 text-2xl -mt-1">{i + 1}</span><span className="leading-relaxed mt-1">{step}</span></li>
+                      ))}
+                    </ol>
+                  </div>
+                </div>
+
+                {isEditor && (
+                <>
+                <div className="mt-12 pt-8 border-t border-gray-100 flex flex-col md:flex-row gap-4 pb-10 print:hidden">
+                  <button onClick={handleShoppingList} className="bg-yellow-500 text-white px-5 py-3 rounded-lg font-bold hover:bg-yellow-600 shadow-md flex items-center justify-center gap-2">🛒 Add to Shopping List</button>
+                  <button onClick={startEditing} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 shadow-md flex items-center justify-center gap-2">✏️ Edit</button>
+                  <button onClick={handleDelete} className="bg-red-50 text-red-600 border border-red-200 px-6 py-3 rounded-lg font-bold hover:bg-red-100 flex items-center justify-center gap-2">🗑️ Delete</button>
+                </div>
+                </>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* --- NO RECIPE SELECTED --- */
+          <div className="text-center text-gray-400">
+             <div className="text-6xl mb-4">{randomEmoji}</div>
+             <p className="text-2xl font-light">Let's cook something good!</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;

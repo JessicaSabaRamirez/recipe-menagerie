@@ -12,10 +12,16 @@ class RecipeSource(BaseModel):
 class RecipeBase(BaseModel):
     title: str
     # validation often fails if these are None instead of empty lists
-    ingredients: List[str] = [] 
+    ingredients: List[str] = []
+    structured_ingredients: List[dict] = []
     instructions: List[str] = []
     tags: List[str] = []
     source: Optional[RecipeSource] = None
+    starred: Optional[bool] = False
+    prep_time: Optional[str] = None
+    cook_time: Optional[str] = None
+    total_time: Optional[str] = None
+    servings: Optional[str] = None
 
 class RecipeCreate(RecipeBase):
     pass

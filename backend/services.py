@@ -91,16 +91,20 @@ def extract_recipe_from_image(image_bytes, mime_type="image/jpeg"):
                 image_part,
                 """
                 Extract the recipe from this image as JSON.
-                
-                CRITICAL INSTRUCTION:
+
+                CRITICAL INSTRUCTIONS:
                 1. "ingredients": Return a simple list of strings for display (e.g., "1 cup flour").
                 2. "structured_ingredients": Parse each ingredient into clean data parts.
                    - qty: numeric string (e.g. "1", "0.5") or null.
                    - unit: standard unit (cup, tbsp, oz, g) or null.
-                   - item: the ingredient name (e.g. "flour", "onion"). Omit terms like "chopped" or 
+                   - item: the ingredient name (e.g. "flour", "onion"). Omit terms like "chopped" or
                    "peeled" which are superfluous when shopping for the item. (Likewise, do not omit
                    any modifiers which would be relevant when shopping, e.g. "pickled" or "frozen".)
-                
+                3. "prep_time": hands-on preparation time (e.g. "20 mins"). null if not found.
+                4. "cook_time": passive cooking time — oven, simmering, etc. (e.g. "45 mins"). null if none.
+                5. "total_time": total time from start to finish (e.g. "1 hr 5 mins"). null if not found.
+                6. "servings": number of servings as a number or range (e.g. "4" or "4-6"). null if not found.
+
                 Follow this schema exactly:
                 {
                     "title": "Recipe Title",
@@ -111,6 +115,10 @@ def extract_recipe_from_image(image_bytes, mime_type="image/jpeg"):
                     ],
                     "instructions": ["Mix ingredients", "Bake at 350"],
                     "tags": ["breakfast", "baking"],
+                    "prep_time": "20 mins",
+                    "cook_time": "45 mins",
+                    "total_time": "1 hr 5 mins",
+                    "servings": "4",
                     "source": {
                         "type": "book",
                         "title": "Book Title (or 'Unknown')",
@@ -167,12 +175,18 @@ def extract_recipe_from_url(url):
         model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = f"""
         You are a recipe parser. Extract the recipe data from this HTML.
-        
+
         Rules:
         1. Find the TITLE, INGREDIENTS list, and INSTRUCTIONS list.
         2. IGNORE ads, comments, navigation menus, and blog stories.
         3. If you find an image URL (jpg/png/webp), put it in "original_image_url".
-        
+        4. Extract prep_time, cook_time, total_time, and servings if present.
+           - prep_time: hands-on preparation time (e.g. "20 mins")
+           - cook_time: passive cooking time — oven, simmering, etc. (e.g. "45 mins")
+           - total_time: total time start to finish (e.g. "1 hr 5 mins")
+           - servings: serving count or range (e.g. "4" or "4-6")
+           Use null for any that are not found.
+
         Return valid JSON strictly following this schema:
         {{
             "title": "Recipe Title",
@@ -182,6 +196,10 @@ def extract_recipe_from_url(url):
             ],
             "instructions": ["Step 1...", "Step 2..."],
             "tags": ["tag1", "tag2"],
+            "prep_time": "20 mins",
+            "cook_time": "45 mins",
+            "total_time": "1 hr 5 mins",
+            "servings": "4",
             "original_image_url": "http://image-url...",
             "source": {{
                 "type": "website",
@@ -262,3 +280,47 @@ def add_ingredients_to_tasks(recipe_title, ingredients):
         print(f"Error adding to tasks: {e}")
         # We print the error but return False so the app doesn't crash
         return False
+
+
+# --- TIME / SERVINGS EXTRACTION ---
+
+def extract_times_for_recipe(recipe):
+    """Uses Gemini to estimate cook times and servings from a recipe's text."""
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        title = recipe.get("title", "")
+        ingredients = "\n".join(recipe.get("ingredients", []))
+        instructions = "\n".join(recipe.get("instructions", []))
+
+        prompt = f"""Given this recipe, estimate the cooking times and serving size.
+
+Recipe title: {title}
+Ingredients:
+{ingredients}
+Instructions:
+{instructions}
+
+Return ONLY a JSON object with this exact structure (no markdown, no extra text):
+{{
+    "prep_time": "20 mins",
+    "cook_time": "45 mins",
+    "total_time": "1 hr 5 mins",
+    "servings": "4"
+}}
+
+Guidelines:
+- prep_time: hands-on preparation time
+- cook_time: passive cooking time (oven, simmering, marinating, etc.) — null if there is none
+- total_time: total elapsed time from start to finish
+- servings: number of servings as a simple number or range (e.g. "4" or "4-6")
+- Use common abbreviations: "mins", "hr", "hrs"
+- If you genuinely cannot estimate a value, use null"""
+
+        response = model.generate_content(prompt)
+        match = re.search(r"\{.*\}", response.text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        return None
+    except Exception as e:
+        print(f"Error extracting times for '{recipe.get('title')}': {e}")
+        return None

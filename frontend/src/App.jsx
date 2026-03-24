@@ -9,8 +9,10 @@ import { addToShoppingList,
          deleteRecipe,
          deleteRecipeImage,
          fetchRecipes,
-         importFromUrl, 
+         importFromUrl,
          setAuthToken,
+         starRecipe,
+         triggerExtractTimes,
          updateRecipe,
          uploadRecipeImage
      } from './api';
@@ -26,6 +28,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [cookMode, setCookMode] = useState(false);
   const [wakeLock, setWakeLock] = useState(null);
+  const [targetServings, setTargetServings] = useState(null);
   
   // --- SECURITY CONFIG ---
   // Add the Google Emails of people allowed to EDIT
@@ -42,15 +45,19 @@ function App() {
 
   // --- EDIT MODE STATE ---
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ 
-    title: "", 
-    tags: "", 
-    ingredients: "", 
+  const [editForm, setEditForm] = useState({
+    title: "",
+    tags: "",
+    ingredients: "",
     instructions: "",
     source_type: "personal",
     source_title: "",
     source_url: "",
-    source_page: ""
+    source_page: "",
+    prep_time: "",
+    cook_time: "",
+    total_time: "",
+    servings: ""
   });
 
     // --- RANDOM EMOJI --- 
@@ -76,9 +83,7 @@ function App() {
                 localStorage.removeItem("token");
             } else {
                 setUser(decoded);
-                import('./api').then(module => {
-                    module.setAuthToken(savedToken);
-                });
+                setAuthToken(savedToken);
             }
         } catch (e) {
             console.error("Invalid token found");
@@ -88,6 +93,11 @@ function App() {
   
   loadRecipes();
   }, []);
+
+  // Reset serving scale when navigating to a different recipe
+  useEffect(() => {
+    setTargetServings(null);
+  }, [selectedRecipe?.id]);
 
   const loadRecipes = async () => {
     try {
@@ -105,34 +115,48 @@ function App() {
     return [];
   };
 
+  // Parse the leading number from a servings string like "4" or "4-6 servings"
+  const parseBaseServings = (servings) => {
+    if (!servings) return null;
+    const match = String(servings).match(/(\d+)/);
+    return match ? parseInt(match[1]) : null;
+  };
+
+  // Multiply a qty string by a scale factor, formatted cleanly
+  const scaleQty = (qty, factor) => {
+    if (!qty || factor === 1) return qty;
+    const num = parseFloat(qty);
+    if (isNaN(num)) return qty;
+    const scaled = num * factor;
+    return scaled % 1 === 0 ? String(scaled) : parseFloat(scaled.toFixed(2)).toString();
+  };
+
   // --- HANDLERS ---
 
   // 1. Manual Entry Handler
   const handleManualEntry = () => {
-    // Create a blank template
-    const newRecipe = {
-        title: "New Recipe",
-        ingredients: [],
-        instructions: [],
-        tags: [],
-        source: { type: "personal" }
-    };
-    
-    setSelectedRecipe(newRecipe);
-    
-    // Populate the form with blank data
+    setSelectedRecipe({ title: "New Recipe", ingredients: [], instructions: [], tags: [], source: { type: "personal" } });
     setEditForm({
-        title: "",
-        tags: "",
-        ingredients: "",
-        instructions: "",
-        source_type: "personal",
-        source_title: "",
-        source_url: "",
-        source_page: ""
+        title: "", tags: "", ingredients: "", instructions: "",
+        source_type: "personal", source_title: "", source_url: "", source_page: "",
+        prep_time: "", cook_time: "", total_time: "", servings: ""
     });
-    
     setIsEditing(true);
+  };
+
+  // Star / unstar a recipe (editor only)
+  const handleStar = async (recipe, e) => {
+    e.stopPropagation();
+    if (!isEditor) return;
+    const newStarred = !recipe.starred;
+    try {
+      await starRecipe(recipe.id, newStarred);
+      const updated = { ...recipe, starred: newStarred };
+      setRecipes(prev => prev.map(r => r.id === recipe.id ? updated : r));
+      if (selectedRecipe?.id === recipe.id) setSelectedRecipe(updated);
+    } catch (err) {
+      console.error("Failed to star recipe", err);
+    }
   };
 
   const handleUrlImport = async () => {
@@ -286,7 +310,11 @@ const handleFileUpload = async (e) => {
       source_type: selectedRecipe.source?.type || "personal",
       source_title: selectedRecipe.source?.title || "",
       source_url: selectedRecipe.source?.url || "",
-      source_page: selectedRecipe.source?.page || ""
+      source_page: selectedRecipe.source?.page || "",
+      prep_time: selectedRecipe.prep_time || "",
+      cook_time: selectedRecipe.cook_time || "",
+      total_time: selectedRecipe.total_time || "",
+      servings: selectedRecipe.servings || ""
     });
     setIsEditing(true);
   };
@@ -309,7 +337,11 @@ const handleFileUpload = async (e) => {
             title: editForm.source_title,
             url: editForm.source_url,
             page: editForm.source_page
-        }
+        },
+        prep_time: editForm.prep_time || null,
+        cook_time: editForm.cook_time || null,
+        total_time: editForm.total_time || null,
+        servings: editForm.servings || null
       };
 
       if (selectedRecipe.id) {
@@ -379,7 +411,11 @@ const handleFileUpload = async (e) => {
         ingredients.includes(term)
       );
     })
-    .sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+    .sort((a, b) => {
+      if (a.starred && !b.starred) return -1;
+      if (!a.starred && b.starred) return 1;
+      return (a.title || "").localeCompare(b.title || "");
+    });
 
   const handleLoginSuccess = (credentialResponse) => {
     // 1. Decode the user info (existing code)
@@ -487,19 +523,28 @@ const handleFileUpload = async (e) => {
              <p className="text-center text-gray-400 mt-10 animate-pulse">Loading recipes...</p>
           ) : (
             filteredRecipes.map((recipe) => (
-              <div 
-                key={recipe.id} 
+              <div
+                key={recipe.id}
                 onClick={() => { setSelectedRecipe(recipe); setIsEditing(false); }}
                 className={`cursor-pointer p-4 rounded-xl transition-all duration-200 border ${
-                  selectedRecipe?.id === recipe.id 
-                    ? "bg-yellow-50 border-yellow-400 shadow-md transform scale-[1.02]" 
+                  selectedRecipe?.id === recipe.id
+                    ? "bg-yellow-50 border-yellow-400 shadow-md transform scale-[1.02]"
                     : "bg-white border-gray-100 hover:bg-gray-50 hover:shadow"
                 }`}
               >
-                <div className="font-bold text-lg text-gray-800">{recipe.title || "Untitled Recipe"}</div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-bold text-lg text-gray-800 leading-tight">{recipe.title || "Untitled Recipe"}</div>
+                  <button
+                    onClick={(e) => handleStar(recipe, e)}
+                    className={`flex-shrink-0 text-xl leading-none mt-0.5 transition-opacity ${isEditor ? "hover:opacity-70 cursor-pointer" : "cursor-default"}`}
+                    title={isEditor ? (recipe.starred ? "Unstar recipe" : "Star recipe") : undefined}
+                  >
+                    {recipe.starred ? "⭐" : <span className="text-gray-200">☆</span>}
+                  </button>
+                </div>
                 <div className="text-xs text-gray-400 uppercase tracking-wide mt-1 flex gap-1 flex-wrap">
                   {safeList(recipe.tags).slice(0, 3).map((tag, i) => (
-                      <span key={i} className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-md font-medium">{tag}</span>
+                    <span key={i} className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-md font-medium">{tag}</span>
                   ))}
                 </div>
               </div>
@@ -602,13 +647,35 @@ const handleFileUpload = async (e) => {
 
                 <div className="mb-6 print:hidden">
                   <label className="block font-bold mb-2 text-gray-600">Tags (comma separated)</label>
-                  <input 
-                    name="tags" 
-                    value={editForm.tags} 
-                    onChange={handleEditChange} 
+                  <input
+                    name="tags"
+                    value={editForm.tags}
+                    onChange={handleEditChange}
                     placeholder="e.g. Dinner, Spicy, Italian"
-                    className="w-full p-3 border border-gray-300 rounded outline-none focus:border-yellow-400" 
+                    className="w-full p-3 border border-gray-300 rounded outline-none focus:border-yellow-400"
                   />
+                </div>
+
+                <div className="mb-6 bg-gray-50 p-4 rounded border border-gray-200">
+                  <h3 className="font-bold text-gray-700 mb-3">Times &amp; Servings</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-500 mb-1">Prep Time</label>
+                      <input name="prep_time" value={editForm.prep_time} onChange={handleEditChange} placeholder="20 mins" className="w-full p-2 border rounded outline-none focus:border-yellow-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-500 mb-1">Cook Time</label>
+                      <input name="cook_time" value={editForm.cook_time} onChange={handleEditChange} placeholder="45 mins" className="w-full p-2 border rounded outline-none focus:border-yellow-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-500 mb-1">Total Time</label>
+                      <input name="total_time" value={editForm.total_time} onChange={handleEditChange} placeholder="1 hr 5 mins" className="w-full p-2 border rounded outline-none focus:border-yellow-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-500 mb-1">Servings</label>
+                      <input name="servings" value={editForm.servings} onChange={handleEditChange} placeholder="4" className="w-full p-2 border rounded outline-none focus:border-yellow-400" />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="mb-6 bg-gray-50 p-4 rounded border border-gray-200">
@@ -671,20 +738,54 @@ const handleFileUpload = async (e) => {
                 )}
 
                 {/* TITLE HEADER + COOK MODE */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b pb-4">
-                  <h1 className="text-3xl md:text-4xl font-extrabold text-gray-900 leading-tight">
-                    {selectedRecipe.title || "Untitled Recipe"}
-                  </h1>
-                  
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-3 border-b pb-4">
+                  <div className="flex items-center gap-3">
+                    <h1 className="text-3xl md:text-4xl font-extrabold text-gray-900 leading-tight">
+                      {selectedRecipe.title || "Untitled Recipe"}
+                    </h1>
+                    <button
+                      onClick={(e) => handleStar(selectedRecipe, e)}
+                      className={`text-2xl leading-none flex-shrink-0 transition-opacity ${isEditor ? "hover:opacity-70 cursor-pointer" : "cursor-default"} print:hidden`}
+                      title={isEditor ? (selectedRecipe.starred ? "Unstar recipe" : "Star recipe") : undefined}
+                    >
+                      {selectedRecipe.starred ? "⭐" : <span className="text-gray-200">☆</span>}
+                    </button>
+                  </div>
+
                   <button onClick={toggleCookMode}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-full font-bold text-sm shadow-sm transition-all
-                      ${cookMode ? "bg-green-100 text-green-800 ring-2 ring-green-500 animate-pulse" 
-                      : "bg-gray-100 text-gray-500 hover:bg-gray-200 print:hidden"
+                    className={`flex items-center gap-2 px-4 py-2 rounded-full font-bold text-sm shadow-sm transition-all print:hidden
+                      ${cookMode ? "bg-green-100 text-green-800 ring-2 ring-green-500 animate-pulse"
+                      : "bg-gray-100 text-gray-500 hover:bg-gray-200"
                       }
                     `}>
                     {cookMode ? "🔥 Cook Mode ON" : "💤 Cook Mode OFF"}
                   </button>
                 </div>
+
+                {/* TIMES + SERVINGS ROW */}
+                {(selectedRecipe.prep_time || selectedRecipe.cook_time || selectedRecipe.total_time || selectedRecipe.servings) && (() => {
+                  const base = parseBaseServings(selectedRecipe.servings);
+                  const effective = targetServings ?? base;
+                  const factor = base && effective ? effective / base : 1;
+                  return (
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-5 text-sm text-gray-500">
+                      {selectedRecipe.prep_time && <span>⏱ Prep: <strong className="text-gray-700">{selectedRecipe.prep_time}</strong></span>}
+                      {selectedRecipe.cook_time && <span>🍳 Cook: <strong className="text-gray-700">{selectedRecipe.cook_time}</strong></span>}
+                      {selectedRecipe.total_time && <span>⏰ Total: <strong className="text-gray-700">{selectedRecipe.total_time}</strong></span>}
+                      {base ? (
+                        <span className="flex items-center gap-1">
+                          🍽 Serves:
+                          <button onClick={() => setTargetServings(Math.max(1, (effective ?? base) - 1))} className="w-5 h-5 rounded-full bg-gray-200 hover:bg-gray-300 font-bold text-xs leading-none flex items-center justify-center print:hidden">−</button>
+                          <strong className="text-gray-700 w-5 text-center">{effective}</strong>
+                          <button onClick={() => setTargetServings((effective ?? base) + 1)} className="w-5 h-5 rounded-full bg-gray-200 hover:bg-gray-300 font-bold text-xs leading-none flex items-center justify-center print:hidden">+</button>
+                          {factor !== 1 && <span className="text-xs text-yellow-600 font-semibold print:hidden">({factor.toFixed(2)}×)</span>}
+                        </span>
+                      ) : selectedRecipe.servings ? (
+                        <span>🍽 Serves: <strong className="text-gray-700">{selectedRecipe.servings}</strong></span>
+                      ) : null}
+                    </div>
+                  );
+                })()}
                 
                 {/* SAFE TAGS */}
                 {safeList(selectedRecipe.tags).length > 0 && (
@@ -718,9 +819,22 @@ const handleFileUpload = async (e) => {
                   <div>
                     <h3 className="text-2xl font-bold mb-4 text-gray-800 border-b-4 border-yellow-300 pb-1 inline-block">Ingredients</h3>
                     <ul className="space-y-3 text-gray-700 leading-relaxed">
-                      {safeList(selectedRecipe.ingredients).map((ing, i) => (
-                        <li key={i} className="flex items-start"><span className="mr-3 text-yellow-500 mt-1.5 text-xs">●</span> {ing}</li>
-                      ))}
+                      {(() => {
+                        const base = parseBaseServings(selectedRecipe.servings);
+                        const effective = targetServings ?? base;
+                        const factor = base && effective ? effective / base : 1;
+                        const scaled = selectedRecipe.structured_ingredients?.length > 0 && factor !== 1;
+                        if (scaled) {
+                          return selectedRecipe.structured_ingredients.map((ing, i) => {
+                            const qty = scaleQty(ing.qty, factor);
+                            const parts = [qty, ing.unit, ing.item].filter(Boolean);
+                            return <li key={i} className="flex items-start"><span className="mr-3 text-yellow-500 mt-1.5 text-xs">●</span>{parts.join(" ")}</li>;
+                          });
+                        }
+                        return safeList(selectedRecipe.ingredients).map((ing, i) => (
+                          <li key={i} className="flex items-start"><span className="mr-3 text-yellow-500 mt-1.5 text-xs">●</span> {ing}</li>
+                        ));
+                      })()}
                     </ul>
                   </div>
                   <div>

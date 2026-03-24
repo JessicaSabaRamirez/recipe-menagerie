@@ -59,6 +59,9 @@ class ShoppingRequest(BaseModel):
 class UrlRequest(BaseModel):
     url: str
 
+class StarRequest(BaseModel):
+    starred: bool
+
 # --- ENDPOINTS ---
 
 @app.post("/analyze")
@@ -120,6 +123,30 @@ def update_recipe_endpoint(recipe_id: str, update_data: Dict[str, Any]):
     if not success:
         raise HTTPException(status_code=404, detail="Recipe not found")
     return {"message": "Recipe updated successfully"}
+
+@app.put("/recipes/{recipe_id}/star", dependencies=[Depends(verify_editor)])
+def star_recipe(recipe_id: str, request: StarRequest):
+    services.update_recipe(recipe_id, {"starred": request.starred})
+    return {"status": "success"}
+
+@app.post("/admin/extract-times", dependencies=[Depends(verify_editor)])
+def extract_times_for_all():
+    """One-time migration: use AI to estimate cook times for recipes that don't have them."""
+    recipes = services.fetch_all_recipes()
+    updated = 0
+    skipped = 0
+    failed = 0
+    for recipe in recipes:
+        if recipe.get("total_time") or recipe.get("prep_time"):
+            skipped += 1
+            continue
+        times = services.extract_times_for_recipe(recipe)
+        if times:
+            services.update_recipe(recipe["id"], times)
+            updated += 1
+        else:
+            failed += 1
+    return {"updated": updated, "skipped": skipped, "failed": failed}
 
 @app.post("/shopping-list", dependencies=[Depends(verify_editor)])
 def add_to_shopping_list(request: ShoppingRequest):

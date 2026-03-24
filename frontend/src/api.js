@@ -112,6 +112,20 @@ export const deleteRecipeImage = async (recipeId) => {
     return response.data;
 };
 
+export const starRecipe = async (id, starred) => {
+    const response = await axios.put(`${API_URL}/recipes/${id}/star`, { starred }, {
+        headers: getHeaders()
+    });
+    return response.data;
+};
+
+export const triggerExtractTimes = async () => {
+    const response = await axios.post(`${API_URL}/admin/extract-times`, {}, {
+        headers: getHeaders()
+    });
+    return response.data;
+};
+
 export const analyzeImage = async (file) => {
     const formData = new FormData();
     formData.append("file", file);

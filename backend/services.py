@@ -292,7 +292,7 @@ def add_ingredients_to_tasks(recipe_title, ingredients):
 # --- OUR GROCERIES ---
 
 async def add_to_our_groceries(recipe_title, ingredients):
-    """Adds ingredients to the user's Our Groceries shopping list."""
+    """Creates a recipe entry in Our Groceries and populates it with ingredients."""
     email = os.environ.get("OUR_GROCERIES_EMAIL")
     password = os.environ.get("OUR_GROCERIES_PASSWORD")
     if not email or not password:
@@ -304,26 +304,15 @@ async def add_to_our_groceries(recipe_title, ingredients):
         og = OurGroceries(email, password)
         await og.login()
 
-        lists_data = await og.get_my_lists()
-        shopping_lists = lists_data.get("shoppingLists", [])
+        # Create a new recipe (not a shopping list) in Our Groceries
+        recipe = await og.create_list(recipe_title, list_type="RECIPES")
+        recipe_id = recipe["id"]
 
-        if not shopping_lists:
-            print("No shopping lists found in Our Groceries account")
-            return False
-
-        # Prefer a list matching OUR_GROCERIES_LIST_NAME env var; otherwise use the first list
-        list_name = os.environ.get("OUR_GROCERIES_LIST_NAME", "")
-        target = None
-        if list_name:
-            target = next((l for l in shopping_lists if l["name"].lower() == list_name.lower()), None)
-        if not target:
-            target = shopping_lists[0]
-
-        list_id = target["id"]
+        # Add each ingredient to the recipe
         for ingredient in ingredients:
-            await og.add_item_to_list(list_id, ingredient, auto_category=True)
+            await og.add_item_to_list(recipe_id, ingredient)
 
-        print(f"Added {len(ingredients)} items to Our Groceries list '{target['name']}'")
+        print(f"Created Our Groceries recipe '{recipe_title}' with {len(ingredients)} ingredients")
         return True
 
     except Exception as e:

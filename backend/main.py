@@ -66,9 +66,9 @@ class StarRequest(BaseModel):
 # --- ENDPOINTS ---
 
 @app.post("/analyze")
-async def analyze_recipe_photo(file: UploadFile = File(...)):
-    content = await file.read()
-    recipe_json = services.extract_recipe_from_image(content, file.content_type)
+async def analyze_recipe_photo(files: List[UploadFile] = File(...)):
+    images = [(await f.read(), f.content_type) for f in files]
+    recipe_json = services.extract_recipe_from_images(images)
     try:
         recipe_data = json.loads(recipe_json)
         return recipe_data
@@ -92,7 +92,7 @@ async def save_recipe(
         
         # If the recipe doesn't have a title yet (e.g., direct upload), ask AI
         if not recipe_data.get("title"):
-            extracted_json = services.extract_recipe_from_image(image_bytes, file.content_type)
+            extracted_json = services.extract_recipe_from_images([(image_bytes, file.content_type)])
             ai_data = json.loads(extracted_json)
             # Merge AI data, but let user data take precedence if it exists
             recipe_data = {**ai_data, **recipe_data}
@@ -150,15 +150,11 @@ def extract_times_for_all():
     return {"updated": updated, "skipped": skipped, "failed": failed}
 
 @app.post("/shopping-list", dependencies=[Depends(verify_editor)])
-def add_to_shopping_list(request: ShoppingRequest):
-    try:
-        success = services.add_ingredients_to_tasks(request.title, request.ingredients)
-        if not success:
-             raise HTTPException(status_code=500, detail="Failed to add to Google Tasks")
-        return {"status": "success"}
-    except Exception as e:
-        print(f"Task Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to add to tasks")
+async def add_to_shopping_list(request: ShoppingRequest):
+    success = await services.add_to_our_groceries(request.title, request.ingredients)
+    if not success:
+        raise HTTPException(status_code=503, detail="Could not add to Our Groceries. Check server credentials.")
+    return {"status": "success"}
 
 @app.post("/import-url", dependencies=[Depends(verify_editor)])
 async def import_recipe_from_url(request: UrlRequest):

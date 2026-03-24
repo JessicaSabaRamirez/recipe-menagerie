@@ -76,21 +76,29 @@ def upload_image_to_gcs(image_bytes, destination_blob_name):
 
 # --- AI FUNCTIONS ---
 
-def extract_recipe_from_image(image_bytes, mime_type="image/jpeg"):
-    """Sends image to Gemini and returns clean JSON string."""
+def extract_recipe_from_images(images):
+    """
+    Sends one or more images to Gemini and returns a clean JSON string.
+    images: list of (bytes, content_type) tuples.
+    """
     try:
         model = genai.GenerativeModel("gemini-2.5-flash")
-        
-        image_part = {
-            "mime_type": mime_type,
-            "data": image_bytes
-        }
 
-        response = model.generate_content(
-            [
-                image_part,
-                """
-                Extract the recipe from this image as JSON.
+        image_parts = [{"mime_type": ct, "data": data} for data, ct in images]
+        multi_page = len(images) > 1
+
+        dish_photo_field = ""
+        dish_photo_instruction = ""
+        if multi_page:
+            dish_photo_field = '\n                    "dish_photo_index": null,'
+            dish_photo_instruction = """
+                7. "dish_photo_index": If one of the images is primarily a photo of the
+                   finished dish (not recipe text), set this to its 0-based index (e.g. 0
+                   for the first image). Set to null if no such photo is present."""
+
+        prompt = f"""
+                Extract the recipe from {"these " + str(len(images)) + " pages" if multi_page else "this image"} as JSON.
+                {"Combine all pages into a single complete recipe." if multi_page else ""}
 
                 CRITICAL INSTRUCTIONS:
                 1. "ingredients": Return a simple list of strings for display (e.g., "1 cup flour").
@@ -103,43 +111,42 @@ def extract_recipe_from_image(image_bytes, mime_type="image/jpeg"):
                 3. "prep_time": hands-on preparation time (e.g. "20 mins"). null if not found.
                 4. "cook_time": passive cooking time — oven, simmering, etc. (e.g. "45 mins"). null if none.
                 5. "total_time": total time from start to finish (e.g. "1 hr 5 mins"). null if not found.
-                6. "servings": number of servings as a number or range (e.g. "4" or "4-6"). null if not found.
+                6. "servings": number of servings as a number or range (e.g. "4" or "4-6"). null if not found.{dish_photo_instruction}
 
                 Follow this schema exactly:
-                {
+                {{
                     "title": "Recipe Title",
                     "ingredients": ["1 cup flour", "2 eggs"],
                     "structured_ingredients": [
-                        {"qty": "1", "unit": "cup", "item": "flour"},
-                        {"qty": "2", "unit": null, "item": "eggs"}
+                        {{"qty": "1", "unit": "cup", "item": "flour"}},
+                        {{"qty": "2", "unit": null, "item": "eggs"}}
                     ],
                     "instructions": ["Mix ingredients", "Bake at 350"],
                     "tags": ["breakfast", "baking"],
                     "prep_time": "20 mins",
                     "cook_time": "45 mins",
                     "total_time": "1 hr 5 mins",
-                    "servings": "4",
-                    "source": {
+                    "servings": "4",{dish_photo_field}
+                    "source": {{
                         "type": "book",
                         "title": "Book Title (or 'Unknown')",
                         "page": 0
-                    }
-                }
+                    }}
+                }}
                 """
-            ]
-        )
-        
+
+        response = model.generate_content(image_parts + [prompt])
         text = response.text
         match = re.search(r"(\{.*\})", text, re.DOTALL)
         if match:
             return match.group(1)
         else:
             return json.dumps({
-                "title": "Error Parsing Recipe", 
-                "ingredients": [], 
+                "title": "Error Parsing Recipe",
+                "ingredients": [],
                 "instructions": ["Could not read text from image."]
             })
-            
+
     except Exception as e:
         print(f"Gemini Error: {e}")
         return json.dumps({
@@ -279,6 +286,48 @@ def add_ingredients_to_tasks(recipe_title, ingredients):
     except Exception as e:
         print(f"Error adding to tasks: {e}")
         # We print the error but return False so the app doesn't crash
+        return False
+
+
+# --- OUR GROCERIES ---
+
+async def add_to_our_groceries(recipe_title, ingredients):
+    """Adds ingredients to the user's Our Groceries shopping list."""
+    email = os.environ.get("OUR_GROCERIES_EMAIL")
+    password = os.environ.get("OUR_GROCERIES_PASSWORD")
+    if not email or not password:
+        print("Our Groceries credentials not configured (set OUR_GROCERIES_EMAIL and OUR_GROCERIES_PASSWORD)")
+        return False
+
+    try:
+        from ourgroceries import OurGroceries
+        og = OurGroceries(email, password)
+        await og.login()
+
+        lists_data = await og.get_my_lists()
+        shopping_lists = lists_data.get("shoppingLists", [])
+
+        if not shopping_lists:
+            print("No shopping lists found in Our Groceries account")
+            return False
+
+        # Prefer a list matching OUR_GROCERIES_LIST_NAME env var; otherwise use the first list
+        list_name = os.environ.get("OUR_GROCERIES_LIST_NAME", "")
+        target = None
+        if list_name:
+            target = next((l for l in shopping_lists if l["name"].lower() == list_name.lower()), None)
+        if not target:
+            target = shopping_lists[0]
+
+        list_id = target["id"]
+        for ingredient in ingredients:
+            await og.add_item_to_list(list_id, ingredient, auto_category=True)
+
+        print(f"Added {len(ingredients)} items to Our Groceries list '{target['name']}'")
+        return True
+
+    except Exception as e:
+        print(f"Our Groceries error: {e}")
         return False
 
 

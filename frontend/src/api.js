@@ -126,13 +126,13 @@ export const triggerExtractTimes = async () => {
     return response.data;
 };
 
-export const analyzeImage = async (file) => {
+export const analyzeImages = async (files) => {
     const formData = new FormData();
-    formData.append("file", file);
-    
-    // Uses getHeaders(true) to handle Auth + Multipart
+    for (const file of files) {
+        formData.append("files", file);
+    }
     const response = await axios.post(`${API_URL}/analyze`, formData, {
-        headers: getHeaders(true) 
+        headers: getHeaders(true)
     });
     return response.data;
 };

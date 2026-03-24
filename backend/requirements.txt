@@ -10,3 +10,4 @@ pydantic
 requests
 python-jose[cryptography]
 passlib[bcrypt]
+ourgroceries

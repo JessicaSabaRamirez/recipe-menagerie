@@ -5,7 +5,7 @@ import axios from 'axios';
 import headerImage from './header-image.png';
 import { useNavigate, useParams } from 'react-router-dom';
 import { addToShoppingList,
-         analyzeImage,
+         analyzeImages,
          createRecipe,
          deleteRecipe,
          deleteRecipeImage,
@@ -34,6 +34,8 @@ function App() {
   const [wakeLock, setWakeLock] = useState(null);
   const [targetServings, setTargetServings] = useState(null);
   const [copiedToast, setCopiedToast] = useState(false);
+  const [showShoppingModal, setShowShoppingModal] = useState(false);
+  const [addingToOG, setAddingToOG] = useState(false);
   
   // --- SECURITY CONFIG ---
   // Add the Google Emails of people allowed to EDIT
@@ -157,6 +159,54 @@ function App() {
     setIsEditing(true);
   };
 
+  // Build a plain-text shopping list for the selected recipe
+  const getShoppingListText = () => {
+    const items = selectedRecipe?.structured_ingredients?.length > 0
+      ? selectedRecipe.structured_ingredients.map(ing => {
+          const parts = [ing.qty, ing.unit, ing.item].filter(Boolean);
+          return `• ${parts.join(" ")}`;
+        })
+      : safeList(selectedRecipe?.ingredients).map(ing => `• ${ing}`);
+    return `${selectedRecipe?.title}\n\n${items.join("\n")}`;
+  };
+
+  const handleCopyShoppingList = async () => {
+    try {
+      await navigator.clipboard.writeText(getShoppingListText());
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2500);
+    } catch (e) { console.error(e); }
+  };
+
+  const handleShareShoppingList = async () => {
+    const text = getShoppingListText();
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: `${selectedRecipe?.title} — ingredients`, text });
+        return;
+      } catch (e) { if (e.name === "AbortError") return; }
+    }
+    handleCopyShoppingList();
+  };
+
+  const handleAddToOurGroceries = async () => {
+    setAddingToOG(true);
+    try {
+      const ingredients = selectedRecipe.structured_ingredients?.length > 0
+        ? selectedRecipe.structured_ingredients.map(ing => [ing.qty, ing.unit, ing.item].filter(Boolean).join(" "))
+        : safeList(selectedRecipe.ingredients);
+      await addToShoppingList(selectedRecipe.title, ingredients);
+      setShowShoppingModal(false);
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2500);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to add to Our Groceries. The server may not be configured yet.");
+    } finally {
+      setAddingToOG(false);
+    }
+  };
+
   // Navigate to a recipe (updates URL and selected state)
   const selectRecipe = (recipe) => {
     setSelectedRecipe(recipe);
@@ -223,87 +273,70 @@ function App() {
   };
 
 const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
 
     setUploading(true);
-
     try {
-      // 1. ANALYZE (Uses api.js, so Auth is included)
-      const aiData = await analyzeImage(file);
+      // 1. Send all photos to AI for extraction
+      const aiData = await analyzeImages(files);
 
-      const confirmedTitle = prompt("Recipe Title found:", aiData.title);
+      const confirmedTitle = prompt(
+        files.length > 1
+          ? `Extracted recipe from ${files.length} photos. Title:`
+          : "Recipe title found:",
+        aiData.title
+      );
       if (confirmedTitle) {
-         
-         // 2. PREPARE CLEAN JSON
-         const cleanRecipe = {
-             title: confirmedTitle,
-             ingredients: Array.isArray(aiData.ingredients)
-               ? aiData.ingredients
-               : (typeof aiData.ingredients === 'string' ? aiData.ingredients.split('\n') : []),
-             structured_ingredients: Array.isArray(aiData.structured_ingredients)
-               ? aiData.structured_ingredients
-               : [], 
-             instructions: Array.isArray(aiData.instructions)
-               ? aiData.instructions
-               : (typeof aiData.instructions === 'string' ? aiData.instructions.split('\n') : []),
-             tags: Array.isArray(aiData.tags) ? aiData.tags : [],
-             source: {
-               type: aiData.source?.type || "n\a",
-               title: aiData.source?.title | "",
-               url: aiData.source?.url || "",
-               page: aiData.source?.page || ""
-             }
-         };
+        // 2. Build clean recipe object
+        const cleanRecipe = {
+          title: confirmedTitle,
+          ingredients: Array.isArray(aiData.ingredients) ? aiData.ingredients
+            : (typeof aiData.ingredients === 'string' ? aiData.ingredients.split('\n') : []),
+          structured_ingredients: Array.isArray(aiData.structured_ingredients) ? aiData.structured_ingredients : [],
+          instructions: Array.isArray(aiData.instructions) ? aiData.instructions
+            : (typeof aiData.instructions === 'string' ? aiData.instructions.split('\n') : []),
+          tags: Array.isArray(aiData.tags) ? aiData.tags : [],
+          prep_time: aiData.prep_time || null,
+          cook_time: aiData.cook_time || null,
+          total_time: aiData.total_time || null,
+          servings: aiData.servings || null,
+          source: {
+            type: aiData.source?.type || "personal",
+            title: aiData.source?.title || "",
+            url: aiData.source?.url || "",
+            page: aiData.source?.page || ""
+          }
+        };
 
-         // 3. CREATE RECIPE (Sends JSON + Auth)
-         // This returns the new recipe, including its ID
-         const newRecipe = await createRecipe(cleanRecipe);
-         
-         // 4. UPLOAD IMAGE (Attaches the file to the new ID)
-         if (newRecipe.id) {
-             await uploadRecipeImage(newRecipe.id, file);
-         }
-         
-         alert("Recipe saved!");
-         loadRecipes();
+        // 3. Save recipe
+        const newRecipe = await createRecipe(cleanRecipe);
+
+        // 4. Determine which photo to save as the recipe image:
+        //    - Single photo: always save it.
+        //    - Multiple photos: only save if AI identified a dish photo.
+        if (newRecipe.id) {
+          let imageToSave = null;
+          if (files.length === 1) {
+            imageToSave = files[0];
+          } else if (aiData.dish_photo_index != null && files[aiData.dish_photo_index]) {
+            imageToSave = files[aiData.dish_photo_index];
+          }
+          if (imageToSave) await uploadRecipeImage(newRecipe.id, imageToSave);
+        }
+
+        alert("Recipe saved!");
+        loadRecipes();
       }
     } catch (err) {
       console.error(err);
       alert("Failed to analyze or save recipe.");
     } finally {
       setUploading(false);
-      // Reset the file input so you can upload the same file again if needed
-      e.target.value = null; 
+      e.target.value = null;
     }
   };
 
-  const handleShoppingList = async () => {
-    if (!selectedRecipe) return;
-    const confirm = window.confirm(`Add items to your Shopping List?`);
-    if (confirm) {
-      try {
-        let listToSend = [];
-
-        if (selectedRecipe.structured_ingredients && selectedRecipe.structured_ingredients.length > 0) {
-          listToSend = selectedRecipe.structured_ingredients.map(item => {
-            const dash = (item.qty || item.unit) ? "-" : null;
-            const parts = [item.item, dash, item.qty, item.unit];
-            return parts.filter(p => p).join(" ");
-          });
-        } else {
-          // Fallback for old recipes
-          listToSend = safeList(selectedRecipe.ingredients);
-        }
-
-        await addToShoppingList(selectedRecipe.title, listToSend);
-        alert("Success! Check your Google Tasks.");
-      } catch (err) {
-        console.error("API Error:", err);
-        alert("Failed to add tasks.");
-      }
-    }
-  };
 
   const handleDelete = async () => {
     if (!selectedRecipe || !selectedRecipe.id) {
@@ -486,8 +519,40 @@ const handleFileUpload = async (e) => {
   return (
     <div className="flex flex-col md:flex-row h-screen bg-gray-100 font-sans text-gray-800 overflow-hidden print:h-auto print:overflow-visible">
       {copiedToast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-5 py-2.5 rounded-full shadow-lg z-50 animate-fade-in">
-          Link copied to clipboard!
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-5 py-2.5 rounded-full shadow-lg z-50">
+          Copied to clipboard!
+        </div>
+      )}
+
+      {showShoppingModal && selectedRecipe && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={() => setShowShoppingModal(false)}>
+          <div className="bg-white rounded-t-2xl md:rounded-2xl shadow-2xl w-full md:max-w-md p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-xl font-bold">🛒 Shopping List</h3>
+              <button onClick={() => setShowShoppingModal(false)} className="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button>
+            </div>
+            <p className="text-sm text-gray-500 mb-3">{selectedRecipe.title}</p>
+            <div className="bg-gray-50 rounded-lg p-4 mb-4 text-sm max-h-56 overflow-y-auto space-y-1">
+              {(selectedRecipe.structured_ingredients?.length > 0
+                ? selectedRecipe.structured_ingredients.map((ing, i) => {
+                    const parts = [ing.qty, ing.unit, ing.item].filter(Boolean);
+                    return <div key={i} className="text-gray-700">• {parts.join(" ")}</div>;
+                  })
+                : safeList(selectedRecipe.ingredients).map((ing, i) => (
+                    <div key={i} className="text-gray-700">• {ing}</div>
+                  ))
+              )}
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <button onClick={handleCopyShoppingList} className="flex-1 bg-gray-100 text-gray-700 py-2.5 rounded-xl font-bold hover:bg-gray-200 text-sm">📋 Copy</button>
+                <button onClick={handleShareShoppingList} className="flex-1 bg-gray-100 text-gray-700 py-2.5 rounded-xl font-bold hover:bg-gray-200 text-sm">📤 Share</button>
+              </div>
+              <button onClick={handleAddToOurGroceries} disabled={addingToOG} className="w-full bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed">
+                {addingToOG ? "Adding…" : "🛍️ Add to Our Groceries"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {/* --- SIDEBAR --- */}
@@ -550,11 +615,12 @@ const handleFileUpload = async (e) => {
            {isEditor && (
            <div className="flex gap-2">
                <label className="flex-1 text-center bg-white border-2 border-dashed border-gray-300 rounded-lg p-2 text-sm text-gray-500 hover:border-yellow-500 hover:text-yellow-500 transition cursor-pointer">
-                 {uploading ? "⏳..." : "📷 Upload Photo"}
-                 <input 
-                   type="file" 
-                   className="hidden" 
+                 {uploading ? "⏳..." : "📷 Upload Photo(s)"}
+                 <input
+                   type="file"
+                   className="hidden"
                    accept="image/*"
+                   multiple
                    onChange={handleFileUpload}
                    disabled={uploading}
                  />
@@ -899,7 +965,7 @@ const handleFileUpload = async (e) => {
 
                 <div className="mt-12 pt-8 border-t border-gray-100 flex flex-col md:flex-row gap-4 pb-10 print:hidden">
                   {isEditor && (<>
-                    <button onClick={handleShoppingList} className="bg-yellow-500 text-white px-5 py-3 rounded-lg font-bold hover:bg-yellow-600 shadow-md flex items-center justify-center gap-2">🛒 Add to Shopping List</button>
+                    <button onClick={() => setShowShoppingModal(true)} className="bg-yellow-500 text-white px-5 py-3 rounded-lg font-bold hover:bg-yellow-600 shadow-md flex items-center justify-center gap-2">🛒 Shopping List</button>
                     <button onClick={startEditing} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 shadow-md flex items-center justify-center gap-2">✏️ Edit</button>
                     <button onClick={handleDelete} className="bg-red-50 text-red-600 border border-red-200 px-6 py-3 rounded-lg font-bold hover:bg-red-100 flex items-center justify-center gap-2">🗑️ Delete</button>
                   </>)}

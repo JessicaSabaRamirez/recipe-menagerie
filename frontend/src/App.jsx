@@ -36,6 +36,7 @@ function App() {
   const [copiedToast, setCopiedToast] = useState(false);
   const [showShoppingModal, setShowShoppingModal] = useState(false);
   const [addingToOG, setAddingToOG] = useState(false);
+  const [showCookDinner, setShowCookDinner] = useState(false);
   
   // --- SECURITY CONFIG ---
   // Add the Google Emails of people allowed to EDIT
@@ -157,6 +158,60 @@ function App() {
         prep_time: "", cook_time: "", total_time: "", servings: ""
     });
     setIsEditing(true);
+  };
+
+  // --- COOK DINNER HELPERS ---
+
+  // Parse a time string like "1 hr 20 mins", "45 mins", "2 hours" into total minutes
+  const parseTotalMinutes = (timeStr) => {
+    if (!timeStr) return null;
+    let minutes = 0;
+    const hrMatch = timeStr.match(/(\d+)\s*h/i);
+    const minMatch = timeStr.match(/(\d+)\s*m/i);
+    if (hrMatch) minutes += parseInt(hrMatch[1]) * 60;
+    if (minMatch) minutes += parseInt(minMatch[1]);
+    return minutes > 0 ? minutes : null;
+  };
+
+  const formatMinutes = (minutes) => {
+    if (minutes < 60) return `${minutes} mins`;
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (mins === 0) return `${hrs} hr${hrs > 1 ? 's' : ''}`;
+    return `${hrs} hr ${mins} mins`;
+  };
+
+  // Sort starred recipes by total time descending; attach startOffset (mins before serving)
+  const buildCookingPlan = (starred) => {
+    const withTimes = starred.map(r => ({ ...r, totalMinutes: parseTotalMinutes(r.total_time) }));
+    return [...withTimes].sort((a, b) => (b.totalMinutes ?? -1) - (a.totalMinutes ?? -1));
+  };
+
+  // Build a plain-text version of the dinner shopping list for copy/share
+  const buildDinnerListText = (starred) => {
+    const sections = starred.map(r => {
+      const items = r.structured_ingredients?.length > 0
+        ? r.structured_ingredients.map(ing => [ing.qty, ing.unit, ing.item].filter(Boolean).join(" "))
+        : safeList(r.ingredients);
+      return `${r.title}\n${items.map(i => `• ${i}`).join("\n")}`;
+    });
+    return `Dinner Shopping List\n\n${sections.join("\n\n")}`;
+  };
+
+  const handleCopyDinnerList = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2500);
+    } catch (e) { console.error(e); }
+  };
+
+  const handleShareDinnerList = async (text) => {
+    if (navigator.share) {
+      try { await navigator.share({ title: "Dinner Shopping List", text }); return; }
+      catch (e) { if (e.name === "AbortError") return; }
+    }
+    handleCopyDinnerList(text);
   };
 
   // Build a plain-text shopping list for the selected recipe
@@ -524,6 +579,122 @@ const handleFileUpload = async (e) => {
         </div>
       )}
 
+      {showCookDinner && (() => {
+        const starred = recipes.filter(r => r.starred);
+        const plan = buildCookingPlan(starred);
+        const dinnerText = buildDinnerListText(starred);
+
+        return (
+          <div className="fixed inset-0 bg-white z-50 flex flex-col print:static">
+            {/* Header */}
+            <div className="bg-yellow-500 px-5 py-4 flex items-center justify-between flex-shrink-0 shadow-md print:hidden">
+              <h2 className="text-xl font-bold text-white">🍽 Cook Dinner</h2>
+              <button onClick={() => setShowCookDinner(false)} className="text-white text-3xl leading-none hover:opacity-70">&times;</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+              <div className="max-w-2xl mx-auto px-4 py-6 space-y-10">
+
+                {starred.length === 0 ? (
+                  <p className="text-gray-400 text-center mt-10">No starred recipes yet. Star some recipes first!</p>
+                ) : (<>
+
+                  {/* TIMING PLAN */}
+                  <section>
+                    <h3 className="text-xl font-bold mb-1">⏱ Cooking Timeline</h3>
+                    <p className="text-sm text-gray-500 mb-4">Work backwards from when you want to serve. Start with the longest dish first.</p>
+                    <div className="space-y-3">
+                      {plan.map((recipe) => (
+                        <div key={recipe.id} className="flex items-start gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                          <div className="text-2xl mt-0.5">{recipe.totalMinutes ? "🕐" : "❓"}</div>
+                          <div className="flex-1">
+                            <div className="font-bold text-gray-900">{recipe.title}</div>
+                            {recipe.total_time && (
+                              <div className="text-xs text-gray-400 mt-0.5">
+                                {[recipe.prep_time && `Prep ${recipe.prep_time}`, recipe.cook_time && `Cook ${recipe.cook_time}`].filter(Boolean).join(" · ")}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            {recipe.totalMinutes ? (
+                              <span className="text-sm font-bold text-yellow-700 bg-yellow-50 px-2.5 py-1 rounded-full">
+                                {formatMinutes(recipe.totalMinutes)} before serving
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">no time data</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* SHOPPING LIST */}
+                  <section>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xl font-bold">🛒 Shopping List</h3>
+                      <div className="flex gap-2 print:hidden">
+                        <button onClick={() => handleCopyDinnerList(dinnerText)} className="bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-gray-200">📋 Copy</button>
+                        <button onClick={() => handleShareDinnerList(dinnerText)} className="bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-gray-200">📤 Share</button>
+                      </div>
+                    </div>
+                    <div className="space-y-5">
+                      {starred.map(recipe => (
+                        <div key={recipe.id}>
+                          <div className="font-semibold text-gray-500 text-sm uppercase tracking-wide mb-2">{recipe.title}</div>
+                          <ul className="space-y-1.5">
+                            {(recipe.structured_ingredients?.length > 0
+                              ? recipe.structured_ingredients.map(ing => [ing.qty, ing.unit, ing.item].filter(Boolean).join(" "))
+                              : safeList(recipe.ingredients)
+                            ).map((ing, i) => (
+                              <li key={i} className="flex items-start gap-2 text-gray-700">
+                                <span className="text-yellow-500 mt-1.5 text-xs flex-shrink-0">●</span>{ing}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* RECIPES */}
+                  <section>
+                    <h3 className="text-xl font-bold mb-4">📋 Recipes</h3>
+                    <div className="space-y-10">
+                      {plan.map(recipe => (
+                        <div key={recipe.id}>
+                          <h4 className="text-2xl font-extrabold text-gray-900 border-b-4 border-yellow-300 pb-1 inline-block mb-4">{recipe.title}</h4>
+                          {(recipe.prep_time || recipe.cook_time || recipe.total_time) && (
+                            <div className="flex flex-wrap gap-3 text-sm text-gray-500 mb-4">
+                              {recipe.prep_time && <span>⏱ Prep: <strong className="text-gray-700">{recipe.prep_time}</strong></span>}
+                              {recipe.cook_time && <span>🍳 Cook: <strong className="text-gray-700">{recipe.cook_time}</strong></span>}
+                              {recipe.total_time && <span>⏰ Total: <strong className="text-gray-700">{recipe.total_time}</strong></span>}
+                            </div>
+                          )}
+                          <ol className="space-y-4">
+                            {safeList(recipe.instructions).map((step, i) => (
+                              <li key={i} className="flex gap-4">
+                                <span className="font-bold text-gray-300 text-2xl -mt-1 flex-shrink-0">{i + 1}</span>
+                                <span className="text-gray-700 leading-relaxed">{step}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <div className="pb-10 print:hidden">
+                    <button onClick={() => window.print()} className="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200">🖨️ Print</button>
+                  </div>
+
+                </>)}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showShoppingModal && selectedRecipe && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={() => setShowShoppingModal(false)}>
           <div className="bg-white rounded-t-2xl md:rounded-2xl shadow-2xl w-full md:max-w-md p-6" onClick={e => e.stopPropagation()}>
@@ -635,6 +806,17 @@ const handleFileUpload = async (e) => {
            </div>
            )}
         </div>
+
+        {recipes.some(r => r.starred) && (
+          <div className="px-4 pb-3 border-b border-gray-100">
+            <button
+              onClick={() => setShowCookDinner(true)}
+              className="w-full bg-yellow-500 text-white py-2.5 rounded-xl font-bold hover:bg-yellow-600 transition flex items-center justify-center gap-2 shadow-sm"
+            >
+              🍽 Cook Dinner
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {loading ? (

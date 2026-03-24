@@ -69,17 +69,18 @@ function App() {
     const savedToken = localStorage.getItem("token");
     
     if (savedToken) {
-        // A. Decode and restore the User UI
         try {
             const decoded = jwtDecode(savedToken);
-            setUser(decoded);
-            
-            // B. Restore the API Token
-            import('./api').then(module => {
-                module.setAuthToken(savedToken);
-            });
+            // Check if token is expired
+            if (decoded.exp * 1000 < Date.now()) {
+                localStorage.removeItem("token");
+            } else {
+                setUser(decoded);
+                import('./api').then(module => {
+                    module.setAuthToken(savedToken);
+                });
+            }
         } catch (e) {
-            // If token is invalid/expired, clear it
             console.error("Invalid token found");
             localStorage.removeItem("token");
         }
@@ -366,20 +367,19 @@ const handleFileUpload = async (e) => {
   };
 
   // Filter Logic
-  const filteredRecipes = recipes.filter(recipe => {
-    const searchTerms = searchTerm.toLowerCase().trim().split(/\s+/);
-
-    const title = (recipe.title || "").toLowerCase();
-    const tags = safeList(recipe.tags).map(t => t.toLowerCase());
-    const ingredients = safeList(recipe.ingredients).join(" ").toLowerCase();
-    return searchTerms.every(term => {
-      return (
+  const filteredRecipes = recipes
+    .filter(recipe => {
+      const searchTerms = searchTerm.toLowerCase().trim().split(/\s+/);
+      const title = (recipe.title || "").toLowerCase();
+      const tags = safeList(recipe.tags).map(t => t.toLowerCase());
+      const ingredients = safeList(recipe.ingredients).join(" ").toLowerCase();
+      return searchTerms.every(term =>
         title.includes(term) ||
         tags.some(tag => tag.includes(term)) ||
         ingredients.includes(term)
-      )
+      );
     })
-  });
+    .sort((a, b) => (a.title || "").localeCompare(b.title || ""));
 
   const handleLoginSuccess = (credentialResponse) => {
     // 1. Decode the user info (existing code)
@@ -733,15 +733,14 @@ const handleFileUpload = async (e) => {
                   </div>
                 </div>
 
-                {isEditor && (
-                <>
                 <div className="mt-12 pt-8 border-t border-gray-100 flex flex-col md:flex-row gap-4 pb-10 print:hidden">
-                  <button onClick={handleShoppingList} className="bg-yellow-500 text-white px-5 py-3 rounded-lg font-bold hover:bg-yellow-600 shadow-md flex items-center justify-center gap-2">🛒 Add to Shopping List</button>
-                  <button onClick={startEditing} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 shadow-md flex items-center justify-center gap-2">✏️ Edit</button>
-                  <button onClick={handleDelete} className="bg-red-50 text-red-600 border border-red-200 px-6 py-3 rounded-lg font-bold hover:bg-red-100 flex items-center justify-center gap-2">🗑️ Delete</button>
+                  {isEditor && (<>
+                    <button onClick={handleShoppingList} className="bg-yellow-500 text-white px-5 py-3 rounded-lg font-bold hover:bg-yellow-600 shadow-md flex items-center justify-center gap-2">🛒 Add to Shopping List</button>
+                    <button onClick={startEditing} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 shadow-md flex items-center justify-center gap-2">✏️ Edit</button>
+                    <button onClick={handleDelete} className="bg-red-50 text-red-600 border border-red-200 px-6 py-3 rounded-lg font-bold hover:bg-red-100 flex items-center justify-center gap-2">🗑️ Delete</button>
+                  </>)}
+                  <button onClick={() => window.print()} className="bg-gray-100 text-gray-600 border border-gray-200 px-6 py-3 rounded-lg font-bold hover:bg-gray-200 flex items-center justify-center gap-2">🖨️ Print</button>
                 </div>
-                </>
-                )}
               </div>
             )}
           </div>

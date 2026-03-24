@@ -2,3 +2,52 @@
 @tailwind components;
 @tailwind utilities;
 
+@media print {
+  /* Hide everything except the recipe detail */
+  .sidebar,
+  nav,
+  button,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background: white;
+    font-size: 12pt;
+    color: black;
+  }
+
+  /* Ensure the recipe content fills the page */
+  .print\:p-0 {
+    padding: 0 !important;
+  }
+
+  /* Keep two-column layout on print */
+  .grid {
+    display: grid !important;
+  }
+
+  /* Avoid page breaks mid-ingredient or mid-step */
+  li, ol > li {
+    break-inside: avoid;
+  }
+
+  /* Show image nicely if present */
+  img {
+    max-height: 3in;
+    width: auto;
+    object-fit: cover;
+  }
+
+  a {
+    text-decoration: none;
+    color: black;
+  }
+
+  /* Show URL inline after source links */
+  a[href]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    color: #555;
+  }
+}

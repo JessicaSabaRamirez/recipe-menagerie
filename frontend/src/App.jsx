@@ -3,6 +3,7 @@ import { jwtDecode } from "jwt-decode";
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import headerImage from './header-image.png';
+import { useNavigate, useParams } from 'react-router-dom';
 import { addToShoppingList,
          analyzeImage,
          createRecipe,
@@ -20,6 +21,9 @@ import { addToShoppingList,
 const API_URL = ""; 
 
 function App() {
+  const { id: recipeIdFromUrl } = useParams();
+  const navigate = useNavigate();
+
   const [recipes, setRecipes] = useState([]);
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -29,6 +33,7 @@ function App() {
   const [cookMode, setCookMode] = useState(false);
   const [wakeLock, setWakeLock] = useState(null);
   const [targetServings, setTargetServings] = useState(null);
+  const [copiedToast, setCopiedToast] = useState(false);
   
   // --- SECURITY CONFIG ---
   // Add the Google Emails of people allowed to EDIT
@@ -91,7 +96,13 @@ function App() {
         }
     }
   
-  loadRecipes();
+  loadRecipes().then(data => {
+    // If the page was opened directly at /recipe/:id, auto-select that recipe
+    if (recipeIdFromUrl) {
+      const recipe = data.find(r => r.id === recipeIdFromUrl);
+      if (recipe) setSelectedRecipe(recipe);
+    }
+  });
   }, []);
 
   // Reset serving scale when navigating to a different recipe
@@ -103,8 +114,10 @@ function App() {
     try {
       const data = await fetchRecipes();
       setRecipes(data);
+      return data;
     } catch (err) {
       console.error("Failed to load recipes", err);
+      return [];
     }
   };
 
@@ -142,6 +155,40 @@ function App() {
         prep_time: "", cook_time: "", total_time: "", servings: ""
     });
     setIsEditing(true);
+  };
+
+  // Navigate to a recipe (updates URL and selected state)
+  const selectRecipe = (recipe) => {
+    setSelectedRecipe(recipe);
+    setIsEditing(false);
+    navigate(`/recipe/${recipe.id}`);
+  };
+
+  // Go back to the recipe list
+  const goBack = () => {
+    setSelectedRecipe(null);
+    navigate('/');
+  };
+
+  // Share the current recipe URL
+  const handleShare = async () => {
+    const url = `${window.location.origin}/recipe/${selectedRecipe.id}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: selectedRecipe.title, url });
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return; // user dismissed share sheet
+      }
+    }
+    // Fallback: copy to clipboard
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedToast(true);
+      setTimeout(() => setCopiedToast(false), 2500);
+    } catch (e) {
+      console.error('Could not copy link', e);
+    }
   };
 
   // Star / unstar a recipe (editor only)
@@ -438,6 +485,11 @@ const handleFileUpload = async (e) => {
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-gray-100 font-sans text-gray-800 overflow-hidden print:h-auto print:overflow-visible">
+      {copiedToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-5 py-2.5 rounded-full shadow-lg z-50 animate-fade-in">
+          Link copied to clipboard!
+        </div>
+      )}
       {/* --- SIDEBAR --- */}
       <div className={`sidebar w-full md:w-1/3 bg-white border-r border-gray-200 flex flex-col shadow-lg z-10 print:hidden
         ${selectedRecipe ? 'hidden md:flex' : 'flex h-full'}
@@ -525,7 +577,7 @@ const handleFileUpload = async (e) => {
             filteredRecipes.map((recipe) => (
               <div
                 key={recipe.id}
-                onClick={() => { setSelectedRecipe(recipe); setIsEditing(false); }}
+                onClick={() => selectRecipe(recipe)}
                 className={`cursor-pointer p-4 rounded-xl transition-all duration-200 border ${
                   selectedRecipe?.id === recipe.id
                     ? "bg-yellow-50 border-yellow-400 shadow-md transform scale-[1.02]"
@@ -719,9 +771,7 @@ const handleFileUpload = async (e) => {
                       {selectedRecipe.id ? "Save Changes" : "Create Recipe"}
                   </button>
                   <button onClick={() => {
-                      // If cancelling a new recipe creation, go back to empty
-                      if (!selectedRecipe.id) setSelectedRecipe(null);
-                      setIsEditing(false);
+                      if (!selectedRecipe.id) { goBack(); } else { setIsEditing(false); }
                   }} className="bg-gray-400 text-white px-6 py-2 rounded-lg font-bold hover:bg-gray-500">Cancel</button>
                 </div>
               </div>
@@ -729,7 +779,7 @@ const handleFileUpload = async (e) => {
             ) : (
               /* === VIEW MODE === */
               <div className="max-w-4xl mx-auto bg-white p-6 md:p-10 rounded-none md:rounded-2xl shadow-none md:shadow-xl min-h-screen md:min-h-0">
-                <button onClick={() => setSelectedRecipe(null)} className="mb-6 text-gray-500 hover:text-gray-700 font-medium flex items-center gap-2">
+                <button onClick={goBack} className="mb-6 text-gray-500 hover:text-gray-700 font-medium flex items-center gap-2 print:hidden">
                    ← Back to List
                 </button>
 
@@ -853,7 +903,8 @@ const handleFileUpload = async (e) => {
                     <button onClick={startEditing} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 shadow-md flex items-center justify-center gap-2">✏️ Edit</button>
                     <button onClick={handleDelete} className="bg-red-50 text-red-600 border border-red-200 px-6 py-3 rounded-lg font-bold hover:bg-red-100 flex items-center justify-center gap-2">🗑️ Delete</button>
                   </>)}
-                  <button onClick={() => window.print()} className="bg-gray-100 text-gray-600 border border-gray-200 px-6 py-3 rounded-lg font-bold hover:bg-gray-200 flex items-center justify-center gap-2">🖨️ Print</button>
+                  <button onClick={handleShare} className="bg-gray-100 text-gray-600 border border-gray-200 px-6 py-3 rounded-lg font-bold hover:bg-gray-200 flex items-center justify-center gap-2 print:hidden">🔗 Share</button>
+                  <button onClick={() => window.print()} className="bg-gray-100 text-gray-600 border border-gray-200 px-6 py-3 rounded-lg font-bold hover:bg-gray-200 flex items-center justify-center gap-2 print:hidden">🖨️ Print</button>
                 </div>
               </div>
             )}

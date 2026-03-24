@@ -6,6 +6,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Security, De
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from pydantic import BaseModel
@@ -211,6 +212,16 @@ def delete_recipe_image(recipe_id: str):
     return {"status": "success"}
 
 # --- SERVE FRONTEND (Must be last) ---
-# Only mounts if the static folder exists (prevents errors if you haven't built yet)
+# Catch-all route: serves static asset files directly, and falls back to index.html
+# for any unrecognised path. This is required for SPA client-side routing to work
+# (e.g. someone opening /recipe/:id directly in their browser).
 if os.path.exists("static"):
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+    app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Serve known static root files (manifest, icons, etc.)
+        candidate = os.path.join("static", full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse("static/index.html")
